@@ -1,1 +1,6 @@
 tones
+tk
+customtkinter
+random
+numpy
+math
