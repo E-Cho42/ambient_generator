@@ -197,7 +197,7 @@ class AmbientMusicApp(ctk.CTk):
         self.generate_button.pack(fill="x", pady=(10, 5), ipady=5)
 
         # --- Song Information Container ---
-        self.song_info_label = ctk.CTkLabel(self.main_frame, text="LAST GENERATED SONG DETAILS", 
+        self.song_info_label = ctk.CTkLabel(self.main_frame, text="", 
                                             font=AppStyles.FONT_STATUS, text_color=AppStyles.INACTIVE_FG_COLOR)
         self.song_info_label.pack(pady=(15, 5), anchor="w")
         
