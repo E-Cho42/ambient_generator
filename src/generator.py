@@ -1,383 +1,269 @@
 import customtkinter as ctk
-import tkinter as tk  # For the Canvas
-import numpy as np    # For wave calculations
-import math           # For sine/cosine
-import main as m      # Assuming main.py has the updated generate function
-import random         
-# The following import assumes these wave types are defined in a file named 'main.py' or 'data.py'
-# For this example, we'll keep the import as is, assuming they are defined elsewhere and imported by main.py
-from main import SINE_WAVE, SAWTOOTH_WAVE, TRIANGLE_WAVE, SQUARE_WAVE
+import tkinter as tk
+import numpy as np
+import random
+import os
+import platform
+import subprocess
+from tones.mixer import Mixer
+from tones import SINE_WAVE, SAWTOOTH_WAVE, TRIANGLE_WAVE, SQUARE_WAVE
 
-# ---------------------Theme--------------------- #
+# --------------------- BACKEND LOGIC --------------------- #
+
+progressions = [
+    [('Cmaj7', ['c', 'e', 'g', 'b']), ('Am7', ['a', 'c', 'e', 'g']), ('Fmaj7', ['f', 'a', 'c', 'e']), ('G7', ['g', 'b', 'd', 'f'])],
+    [('Dm9', ['d', 'f', 'a', 'c', 'e']), ('G13', ['g', 'b', 'd', 'f', 'a', 'e']), ('Cmaj9', ['c', 'e', 'g', 'b', 'd'])],
+    [('i-VI-III-VII', ['a', 'c', 'e']), ('Fmaj', ['f', 'a', 'c']), ('Cmaj', ['c', 'e', 'g']), ('Gmaj', ['g', 'b', 'd'])]
+]
+
+def chord_scale(notes):
+    scale = set(notes)
+    mapping = {'c': 'd', 'd': 'e', 'e': 'f', 'f': 'g', 'g': 'a', 'a': 'b', 'b': 'c'}
+    for note in notes:
+        if note in mapping:
+            scale.add(mapping[note])
+    return sorted(list(scale))
+
+def generate_music(volume=0.7, tempo=90, reverb=False, delay=False, swell=True, seed="1234567890", wave_type=SINE_WAVE):
+    tempo = max(1, tempo)
+    random.seed(int(seed))
+    
+    mixer = Mixer(44100, amplitude=0.4 * volume)
+    prog_idx = int(seed[-2:]) % len(progressions)
+    chosen_prog = progressions[prog_idx]
+    
+    beat_dur = 60 / tempo
+    measure_dur = beat_dur * 4
+
+    mixer.create_track("pad", wave_type, attack=2.0 if swell else 0.5, decay=1.5)
+    mixer.create_track("bass", SINE_WAVE, attack=0.05, decay=0.4)
+    mixer.create_track("rhythm", SQUARE_WAVE, attack=0.01, decay=0.1)
+    mixer.create_track("melody", wave_type, attack=0.4, decay=2.0)
+
+    loops = 4 + random.randint(0, 2)
+    for _ in range(loops):
+        for _, notes in chosen_prog:
+            for note in notes:
+                mixer.add_note("pad", note=note, octave=3, duration=measure_dur, amplitude=0.12)
+            for _ in range(4):
+                mixer.add_note("bass", note=notes[0], octave=2, duration=beat_dur)
+            
+            r_slice = measure_dur / 8
+            for i in range(8):
+                sound = min(0.1, r_slice * 0.4)
+                mixer.add_note("rhythm", note=notes[0], octave=2, duration=sound, amplitude=0.05 if i%2==0 else 0.08)
+                mixer.add_note("rhythm", note=notes[0], octave=2, duration=max(0.01, r_slice-sound), amplitude=0)
+            
+            scale = chord_scale(notes)
+            elapsed = 0
+            while elapsed < (measure_dur - 0.02):
+                m_note = random.choice(scale)
+                dur = random.choice([0.5, 1.0]) * beat_dur
+                if elapsed + dur > measure_dur: dur = measure_dur - elapsed
+                mixer.add_note("melody", note=m_note, octave=5, duration=dur, amplitude=0.2)
+                elapsed += dur
+
+    output_path = os.path.join(os.getcwd(), "audio.wav")
+    mixer.write_wav(output_path)
+    return {"progression": [c[0] for c in chosen_prog], "tempo": tempo, "wave": wave_type}
+
+# --------------------- GUI INTERFACE --------------------- #
+
 class AppStyles:
-    BG_COLOR = "#1a1a1a"           # Very dark gray
-    SIDEBAR_COLOR = "#242424"      # Slightly lighter gray
+    BG_COLOR = "#1a1a1a"           
+    SIDEBAR_COLOR = "#242424"      
     MAIN_FRAME_COLOR = "transparent"
-    
-    PRIMARY_COLOR = "#00aA66"       # A deep, modern green
-    PRIMARY_HOVER_COLOR = "#00cc88" # A lighter, vibrant green
-    SECONDARY_COLOR = "#333333"    # For inactive elements
-    
+    PRIMARY_COLOR = "#00aA66"       
+    PRIMARY_HOVER_COLOR = "#00cc88" 
+    SECONDARY_COLOR = "#333333"    
     FG_COLOR = "#eceff4"
-    INACTIVE_FG_COLOR = "#999999"  # Neutral gray
-    
+    INACTIVE_FG_COLOR = "#999999"  
     FONT_FAMILY = "Helvetica"
     FONT_TITLE = (FONT_FAMILY, 32, "bold")
     FONT_H2 = (FONT_FAMILY, 18, "bold")
     FONT_LABEL = (FONT_FAMILY, 14)
     FONT_BUTTON = (FONT_FAMILY, 14, "bold")
     FONT_STATUS = (FONT_FAMILY, 12)
-    FONT_AXIS_LABEL = (FONT_FAMILY, 10) 
 
-# ---------------------Wave Presets--------------------- #
-wave_presets = {
-    "Sine": SINE_WAVE,
-    "Sawtooth": SAWTOOTH_WAVE,
-    "Triangle": TRIANGLE_WAVE,
-    "Square": SQUARE_WAVE
-}
-
-# --- Visualizer Wave Functions (Simplified for GUI drawing) ---
-def sine_func(x, phase):
-    """Generates a pure sine wave."""
-    frequency = 0.04
-    return np.sin(x * frequency + phase)
-
-def square_func(x, phase):
-    """Generates a square wave approximation using numpy's sign function."""
-    frequency = 0.04
-    return np.sign(np.sin(x * frequency + phase))
-
-def sawtooth_func(x, phase):
-    """Generates a sawtooth wave using modulo/remainder."""
-    frequency = 0.04
-    scaled_x = (x * frequency + phase) / (2 * np.pi) 
-    return (scaled_x - np.floor(scaled_x)) * 2 - 1
-
-def triangle_func(x, phase):
-    """Generates a triangle wave approximation."""
-    frequency = 0.04
-    scaled_x = x * frequency + phase
-    return np.arcsin(np.sin(scaled_x)) * (2 / np.pi)
-
+wave_presets = {"Sine": SINE_WAVE, "Sawtooth": SAWTOOTH_WAVE, "Triangle": TRIANGLE_WAVE, "Square": SQUARE_WAVE}
 VISUALIZER_FUNCTIONS = {
-    "Sine": sine_func,
-    "Square": square_func,
-    "Sawtooth": sawtooth_func,
-    "Triangle": triangle_func
+    "Sine": lambda x, p: np.sin(x * 0.04 + p),
+    "Square": lambda x, p: np.sign(np.sin(x * 0.04 + p)),
+    "Sawtooth": lambda x, p: ((x * 0.04 + p) / (2 * np.pi) % 1) * 2 - 1,
+    "Triangle": lambda x, p: np.arcsin(np.sin(x * 0.04 + p)) * (2 / np.pi)
 }
-# -------------------------------------------------------------
 
-# ---------------------Main Application Class--------------------- #
 class AmbientMusicApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # --- Window Setup ---
         self.title("Ambient Music Generator")
-        self.geometry("900x600")
+        self.geometry("900x800") 
         self.configure(fg_color=AppStyles.BG_COLOR)
         self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", self.on_closing)
 
-        # --- Variables ---
+        # Variables
         self.volume_var = ctk.DoubleVar(value=70)
         self.tempo_var = ctk.DoubleVar(value=90)
         self.reverb_var = ctk.BooleanVar(value=False)
         self.delay_var = ctk.BooleanVar(value=False)
         self.swell_var = ctk.BooleanVar(value=True)
         self.seed_var = tk.StringVar(value=str(random.randint(1000000000, 9999999999)))
-        self.last_song_data = None # Store song data here
-
-        # --- Animation State ---
+        
+        self.player_process = None 
         self.phase_offset = 0.0
-        self.anim_running = True
 
-        # --- Layout Setup ---
         self.grid_columnconfigure(0, weight=0, minsize=240)
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=0)
 
-        # --- Create Widgets ---
         self._create_sidebar()
         self._create_main_frame()
         self._create_status_bar()
-        
-        # --- Start Animations ---
-        self.after(100, self._start_animation_loop)
+        self.after(100, self._animate_visualizer)
 
-    # ---------------------Widget Creation Methods--------------------- #
     def _create_sidebar(self):
         self.sidebar_frame = ctk.CTkFrame(self, fg_color=AppStyles.SIDEBAR_COLOR, corner_radius=0)
         self.sidebar_frame.grid(row=0, column=0, sticky="nsew")
-
-        title_label = ctk.CTkLabel(self.sidebar_frame, text="PARAMETERS", font=AppStyles.FONT_H2, text_color=AppStyles.FG_COLOR)
-        title_label.pack(padx=20, pady=(20, 10), anchor="w")
-
-        # Volume
-        volume_label = ctk.CTkLabel(self.sidebar_frame, text="Volume", font=AppStyles.FONT_LABEL, text_color=AppStyles.INACTIVE_FG_COLOR)
-        volume_label.pack(padx=20, pady=(10, 0), anchor="w")
-        volume_slider = ctk.CTkSlider(self.sidebar_frame, from_=0, to=100, variable=self.volume_var,
-                                      fg_color=AppStyles.SECONDARY_COLOR, progress_color=AppStyles.PRIMARY_COLOR,
-                                      button_color=AppStyles.PRIMARY_COLOR, button_hover_color=AppStyles.PRIMARY_HOVER_COLOR)
-        volume_slider.pack(padx=20, pady=(5, 20), fill="x")
-
-        # Tempo
-        tempo_label = ctk.CTkLabel(self.sidebar_frame, text="Tempo (BPM)", font=AppStyles.FONT_LABEL, text_color=AppStyles.INACTIVE_FG_COLOR)
-        tempo_label.pack(padx=20, pady=(10, 0), anchor="w")
-        tempo_slider = ctk.CTkSlider(self.sidebar_frame, from_=40, to=180, variable=self.tempo_var, number_of_steps=140,
-                                     fg_color=AppStyles.SECONDARY_COLOR, progress_color=AppStyles.PRIMARY_COLOR,
-                                     button_color=AppStyles.PRIMARY_COLOR, button_hover_color=AppStyles.PRIMARY_HOVER_COLOR)
-        tempo_slider.pack(padx=20, pady=(5, 20), fill="x")
-
-        # Effects
-        fx_label = ctk.CTkLabel(self.sidebar_frame, text="EFFECTS", font=AppStyles.FONT_H2, text_color=AppStyles.FG_COLOR)
-        fx_label.pack(padx=20, pady=(20, 10), anchor="w")
-
-        reverb_switch = ctk.CTkSwitch(self.sidebar_frame, text="Reverb", variable=self.reverb_var,
-                                      font=AppStyles.FONT_LABEL, progress_color=AppStyles.PRIMARY_COLOR)
-        reverb_switch.pack(padx=20, pady=10, fill="x")
-        delay_switch = ctk.CTkSwitch(self.sidebar_frame, text="Delay", variable=self.delay_var,
-                                     font=AppStyles.FONT_LABEL, progress_color=AppStyles.PRIMARY_COLOR)
-        delay_switch.pack(padx=20, pady=10, fill="x")
-        swell_switch = ctk.CTkSwitch(self.sidebar_frame, text="Swell", variable=self.swell_var,
-                                     font=AppStyles.FONT_LABEL, progress_color=AppStyles.PRIMARY_COLOR)
-        swell_switch.pack(padx=20, pady=10, fill="x")
+        
+        ctk.CTkLabel(self.sidebar_frame, text="PARAMETERS", font=AppStyles.FONT_H2, text_color=AppStyles.FG_COLOR).pack(padx=20, pady=(20, 10), anchor="w")
+        
+        ctk.CTkLabel(self.sidebar_frame, text="Volume", font=AppStyles.FONT_LABEL, text_color=AppStyles.INACTIVE_FG_COLOR).pack(padx=20, pady=(10, 0), anchor="w")
+        ctk.CTkSlider(self.sidebar_frame, from_=0, to=100, variable=self.volume_var, progress_color=AppStyles.PRIMARY_COLOR).pack(padx=20, pady=(5, 20), fill="x")
+        
+        ctk.CTkLabel(self.sidebar_frame, text="Tempo (BPM)", font=AppStyles.FONT_LABEL, text_color=AppStyles.INACTIVE_FG_COLOR).pack(padx=20, pady=(10, 0), anchor="w")
+        ctk.CTkSlider(self.sidebar_frame, from_=40, to=180, variable=self.tempo_var, progress_color=AppStyles.PRIMARY_COLOR).pack(padx=20, pady=(5, 20), fill="x")
+        
+        ctk.CTkLabel(self.sidebar_frame, text="EFFECTS", font=AppStyles.FONT_H2, text_color=AppStyles.FG_COLOR).pack(padx=20, pady=(20, 10), anchor="w")
+        ctk.CTkSwitch(self.sidebar_frame, text="Reverb", variable=self.reverb_var).pack(padx=20, pady=10, anchor="w")
+        ctk.CTkSwitch(self.sidebar_frame, text="Delay", variable=self.delay_var).pack(padx=20, pady=10, anchor="w")
+        ctk.CTkSwitch(self.sidebar_frame, text="Swell", variable=self.swell_var).pack(padx=20, pady=10, anchor="w")
 
     def _create_main_frame(self):
         self.main_frame = ctk.CTkFrame(self, fg_color=AppStyles.MAIN_FRAME_COLOR)
         self.main_frame.grid(row=0, column=1, sticky="nsew", padx=30, pady=20)
-
-        title_label = ctk.CTkLabel(self.main_frame, text="Ambient Music", font=AppStyles.FONT_TITLE, text_color=AppStyles.FG_COLOR)
-        title_label.pack(pady=(0, 10), anchor="w")
-
-        # Wave Visualizer
+        
+        ctk.CTkLabel(self.main_frame, text="Ambient Music", font=AppStyles.FONT_TITLE, text_color=AppStyles.FG_COLOR).pack(pady=(0, 10), anchor="w")
+        
         self.vis_canvas = tk.Canvas(self.main_frame, bg=AppStyles.BG_COLOR, height=120, highlightthickness=0)
         self.vis_canvas.pack(fill="x", pady=20)
-
-        # Waveform selection
-        wave_label = ctk.CTkLabel(self.main_frame, text="WAVEFORM", font=AppStyles.FONT_H2, text_color=AppStyles.FG_COLOR)
-        wave_label.pack(pady=(10, 5), anchor="w")
-
-        self.wave_preset_button = ctk.CTkSegmentedButton(self.main_frame, 
-                                                         values=list(wave_presets.keys()),
-                                                         font=AppStyles.FONT_LABEL,
-                                                         selected_color=AppStyles.PRIMARY_COLOR,
-                                                         selected_hover_color=AppStyles.PRIMARY_HOVER_COLOR,
-                                                         unselected_color=AppStyles.SECONDARY_COLOR)
-        self.wave_preset_button.set("Sine")  # default
-        self.wave_preset_button.pack(fill="x", pady=10)
         
-        # --- Seed Entry and New Button (Layout using a sub-frame) ---
+        ctk.CTkLabel(self.main_frame, text="WAVEFORM", font=AppStyles.FONT_H2, text_color=AppStyles.FG_COLOR).pack(pady=(10, 5), anchor="w")
+        self.wave_btn = ctk.CTkSegmentedButton(self.main_frame, values=list(wave_presets.keys()))
+        self.wave_btn.set("Sine")
+        self.wave_btn.pack(fill="x", pady=10)
+
         seed_control_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
-        seed_control_frame.pack(fill="x", pady=(0, 20))
+        seed_control_frame.pack(fill="x", pady=(10, 10))
         seed_control_frame.grid_columnconfigure(0, weight=1)
-        seed_control_frame.grid_columnconfigure(1, weight=0)
         
-        # Seed Label
-        seed_label = ctk.CTkLabel(seed_control_frame, text="Seed: 10 Digits", font=AppStyles.FONT_LABEL, text_color=AppStyles.INACTIVE_FG_COLOR)
-        seed_label.grid(row=0, column=0, columnspan=2, pady=(10, 5), sticky="w")
+        ctk.CTkLabel(seed_control_frame, text="Seed: 10 Digits", font=AppStyles.FONT_LABEL, text_color=AppStyles.INACTIVE_FG_COLOR).grid(row=0, column=0, pady=(0, 5), sticky="w")
+        ctk.CTkEntry(seed_control_frame, textvariable=self.seed_var, font=AppStyles.FONT_LABEL, fg_color=AppStyles.SECONDARY_COLOR).grid(row=1, column=0, sticky="ew", padx=(0, 10))
+        ctk.CTkButton(seed_control_frame, text="New Seed", font=AppStyles.FONT_BUTTON, command=self._generate_new_seed, fg_color=AppStyles.SECONDARY_COLOR, width=100).grid(row=1, column=1, sticky="e")
+
+        self.gen_btn = ctk.CTkButton(self.main_frame, text="Generate Music", font=AppStyles.FONT_BUTTON, command=self._on_generate, fg_color=AppStyles.PRIMARY_COLOR, height=50)
+        self.gen_btn.pack(fill="x", pady=(5, 5))
+
+        self.play_frame = ctk.CTkFrame(self.main_frame, fg_color="transparent")
+        self.play_frame.pack(fill="x", pady=10)
+        ctk.CTkButton(self.play_frame, text="▶ Play", command=self._play_music, fg_color="#2b719e", height=50).pack(side="left", expand=True, fill="x", padx=(0, 5))
+        ctk.CTkButton(self.play_frame, text="⏹ Stop", command=self._stop_music, fg_color=AppStyles.SECONDARY_COLOR, height=50).pack(side="right", expand=True, fill="x", padx=(5, 0))
+
+        # INFO TABLE SECTION (Bottom space)
+        self.info_table_frame = ctk.CTkFrame(self.main_frame, fg_color=AppStyles.SIDEBAR_COLOR, corner_radius=8)
+        self.info_table_frame.pack(fill="x", pady=(20, 0))
+        self.info_table_frame.pack_forget() # Hidden initially
+
+    def _update_info_table(self, data):
+        # Clear existing table content
+        for widget in self.info_table_frame.winfo_children():
+            widget.destroy()
         
-        # Seed Entry
-        seed_entry = ctk.CTkEntry(seed_control_frame, textvariable=self.seed_var, font=AppStyles.FONT_LABEL,
-                                  fg_color=AppStyles.SECONDARY_COLOR, text_color=AppStyles.FG_COLOR, placeholder_text="Enter seed...")
-        seed_entry.grid(row=1, column=0, sticky="ew", padx=(0, 10))
-
-        # New Seed Button
-        self.new_seed_button = ctk.CTkButton(seed_control_frame, text="New Seed", font=AppStyles.FONT_BUTTON,
-                                             command=self._generate_new_seed, fg_color=AppStyles.SECONDARY_COLOR,
-                                             hover_color=AppStyles.PRIMARY_HOVER_COLOR)
-        self.new_seed_button.grid(row=1, column=1, sticky="e")
-        # -------------------------------------------------------------
-
-        # Generate Button
-        self.generate_button = ctk.CTkButton(self.main_frame, text="Generate Music", font=AppStyles.FONT_BUTTON,
-                                             command=self._on_generate, fg_color=AppStyles.PRIMARY_COLOR,
-                                             hover_color=AppStyles.PRIMARY_HOVER_COLOR, height=50, corner_radius=10)
-        self.generate_button.pack(fill="x", pady=(10, 5), ipady=5)
-
-        # --- Song Information Container ---
-        self.song_info_label = ctk.CTkLabel(self.main_frame, text="", 
-                                            font=AppStyles.FONT_STATUS, text_color=AppStyles.INACTIVE_FG_COLOR)
-        self.song_info_label.pack(pady=(15, 5), anchor="w")
+        self.info_table_frame.grid_columnconfigure((0, 1), weight=1)
         
-        self.song_info_frame = ctk.CTkFrame(self.main_frame, fg_color=AppStyles.SECONDARY_COLOR, corner_radius=8)
-        self._update_song_info_display(None) # Initialize with placeholder text
-        self.song_info_frame.pack(fill="x", pady=(0, 20))
-        # ----------------------------------
+        details = [
+            ("Current Seed", self.seed_var.get()),
+            ("Tempo", f"{data['tempo']} BPM"),
+            ("Waveform", self.wave_btn.get()),
+            ("Progression", " → ".join(data['progression']))
+        ]
+
+        for i, (label, value) in enumerate(details):
+            # Row shading
+            row_bg = AppStyles.SIDEBAR_COLOR if i % 2 == 0 else AppStyles.SECONDARY_COLOR
+            f = ctk.CTkFrame(self.info_table_frame, fg_color=row_bg, corner_radius=0)
+            f.pack(fill="x")
+            
+            ctk.CTkLabel(f, text=label, font=(AppStyles.FONT_FAMILY, 12, "bold"), text_color=AppStyles.PRIMARY_COLOR, width=120, anchor="w").pack(side="left", padx=15, pady=8)
+            ctk.CTkLabel(f, text=value, font=(AppStyles.FONT_FAMILY, 12), text_color=AppStyles.FG_COLOR, anchor="w").pack(side="left", padx=5, pady=8)
+
+        self.info_table_frame.pack(fill="x", pady=(20, 0))
 
     def _create_status_bar(self):
-        self.status_bar_frame = ctk.CTkFrame(self, fg_color=AppStyles.SIDEBAR_COLOR, height=25, corner_radius=0)
-        self.status_bar_frame.grid(row=1, column=0, columnspan=2, sticky="nsew")
-        self.status_label = ctk.CTkLabel(self.status_bar_frame, text="Ready.", font=AppStyles.FONT_STATUS, text_color=AppStyles.INACTIVE_FG_COLOR)
+        self.status_bar = ctk.CTkFrame(self, fg_color=AppStyles.SIDEBAR_COLOR, height=25, corner_radius=0)
+        self.status_bar.grid(row=1, column=0, columnspan=2, sticky="ew")
+        self.status_label = ctk.CTkLabel(self.status_bar, text="Ready.", font=AppStyles.FONT_STATUS, text_color=AppStyles.INACTIVE_FG_COLOR)
         self.status_label.pack(side="left", padx=20)
 
-    # -------------------- Utility Method -------------------- #
-    def _generate_new_seed(self):
-        """Generates a new random 10-digit seed and updates the variable."""
-        new_seed = str(random.randint(1000000000, 9999999999))
-        self.seed_var.set(new_seed)
-        self.status_label.configure(text="New seed generated.")
+    def _play_music(self):
+        self._stop_music()
+        path = os.path.join(os.getcwd(), "audio.wav")
+        if os.path.exists(path):
+            sys_name = platform.system()
+            if sys_name == "Darwin": self.player_process = subprocess.Popen(["afplay", path])
+            elif sys_name == "Windows": self.player_process = subprocess.Popen(["powershell", f"(New-Object Media.SoundPlayer '{path}').PlaySync()"])
+            else: self.player_process = subprocess.Popen(["aplay", path])
+            self.status_label.configure(text="Playing track...")
+        else: self.status_label.configure(text="Error: audio.wav not found.")
 
-    # -------------------- Animation -------------------- #
-    def _start_animation_loop(self):
-        self.anim_running = True
-        self._animate_visualizer()
+    def _stop_music(self):
+        if self.player_process:
+            self.player_process.terminate()
+            self.player_process = None
+            self.status_label.configure(text="Playback stopped.")
+
+    def on_closing(self):
+        self._stop_music()
+        self.destroy()
+
+    def _generate_new_seed(self):
+        self.seed_var.set(str(random.randint(1000000000, 9999999999)))
+
+    def _on_generate(self):
+        self._stop_music()
+        self.status_label.configure(text="Generating ambient sounds... 🎵")
+        self.update_idletasks()
+        try:
+            res = generate_music(
+                volume=self.volume_var.get()/100,
+                tempo=self.tempo_var.get(),
+                reverb=self.reverb_var.get(),
+                delay=self.delay_var.get(),
+                swell=self.swell_var.get(),
+                seed=self.seed_var.get(),
+                wave_type=wave_presets[self.wave_btn.get()]
+            )
+            self._update_info_table(res)
+            self.status_label.configure(text="Generation Complete! ✨")
+        except Exception as e:
+            self.status_label.configure(text=f"Error: {e}")
 
     def _animate_visualizer(self):
-        if not self.anim_running:
-            return
-            
-        canvas_width = self.vis_canvas.winfo_width()
-        canvas_height = self.vis_canvas.winfo_height()
-        volume = self.volume_var.get() / 100
-        tempo = self.tempo_var.get()
-        self.vis_canvas.delete("all")
-        
-        # Axis parameters
-        mid_y = canvas_height / 2
-        axis_color = AppStyles.INACTIVE_FG_COLOR
-        axis_width = 2
-        
-        # --- Draw Axes and Labels ---
-        self.vis_canvas.create_line(0, mid_y, canvas_width, mid_y, fill=axis_color, width=axis_width)
-        v_axis_x = 5
-        self.vis_canvas.create_line(v_axis_x, 0, v_axis_x, canvas_height, fill=axis_color, width=axis_width)
-        
-        label_color = AppStyles.INACTIVE_FG_COLOR
-        font = AppStyles.FONT_AXIS_LABEL
-        text_offset = 2 
-        
-        self.vis_canvas.create_text(v_axis_x + text_offset, 5, text="+Vol", anchor="nw", 
-                                    fill=label_color, font=font)
-        self.vis_canvas.create_text(v_axis_x + text_offset, canvas_height - 5, text="-Vol", anchor="sw", 
-                                    fill=label_color, font=font)
-        self.vis_canvas.create_text(v_axis_x + text_offset, mid_y, text="0", anchor="w", 
-                                    fill=label_color, font=font)
-        self.vis_canvas.create_text(canvas_width - 5, mid_y - text_offset, text="Time ->", anchor="se", 
-                                    fill=label_color, font=font)
-        # ----------------------------
-        
-        amplitude = volume * (canvas_height / 2.5)
-        speed = (tempo / 120) * 0.1
-        self.phase_offset += speed
-        
-        x = np.linspace(0, canvas_width, num=canvas_width)
-
-        # --- Dynamic Waveform Calculation (Right-to-Left Scrolling) ---
-        wave_choice = self.wave_preset_button.get()
-        wave_function = VISUALIZER_FUNCTIONS.get(wave_choice, sine_func)
-        
-        wave_data = wave_function(x, -self.phase_offset) 
-        
-        y = mid_y + amplitude * wave_data
-        # ------------------------------------
-
-        points = list(zip(x, y))
-        self.vis_canvas.create_line(points, fill=AppStyles.PRIMARY_COLOR, width=2.5)
-        self.after(33, self._animate_visualizer)
-
-    # -------------------- Song Info Display -------------------- #
-
-    def _update_song_info_display(self, data):
-        # Clear previous content
-        for widget in self.song_info_frame.winfo_children():
-            widget.destroy()
-
-        if data is None:
-            placeholder = ctk.CTkLabel(self.song_info_frame, text="No song generated yet. Press 'Generate Music' to see details.", 
-                                    font=AppStyles.FONT_LABEL, text_color=AppStyles.FG_COLOR)
-            placeholder.pack(padx=10, pady=10, fill="x")
-            return
-
-        # Create a grid container inside the song_info_frame
-        inner_frame = ctk.CTkFrame(self.song_info_frame, fg_color="transparent")
-        inner_frame.pack(fill="x", expand=False, padx=10, pady=10)
-
-        # Configure the grid to make the two columns flexible
-        # Column 0 (Parameter) and Column 1 (Value) will share the width equally
-        inner_frame.grid_columnconfigure(0, weight=1) 
-        inner_frame.grid_columnconfigure(1, weight=1) 
-        
-        row_index = 0
-
-        # Helper to create each row using .grid()
-        def create_row(param, value, is_header=False):
-            nonlocal row_index
-            
-            color = AppStyles.PRIMARY_COLOR if is_header else AppStyles.FG_COLOR
-            font_style = AppStyles.FONT_H2 if is_header else AppStyles.FONT_STATUS
-            
-            # --- Column 0: Parameter Label (Left-aligned) ---
-            ctk.CTkLabel(inner_frame, text=param, font=font_style, text_color=color, anchor="w").grid(
-                row=row_index, column=0, sticky="w", pady=2, padx=(0, 10))
-                
-            # --- Column 1: Value Label (Right-aligned) ---
-            ctk.CTkLabel(inner_frame, text=value, font=font_style, text_color=color, anchor="e").grid(
-                row=row_index, column=1, sticky="e", pady=2, padx=(10, 0))
-                
-            row_index += 1
-
-        # Table rows
-        create_row("Parameter", "Value", is_header=True)
-        
-        # Add a separator line for clarity
-        separator = ctk.CTkFrame(inner_frame, height=1, fg_color=AppStyles.INACTIVE_FG_COLOR)
-        separator.grid(row=row_index, column=0, columnspan=2, sticky="ew", pady=(5, 5))
-        row_index += 1 
-
-        create_row("Chord Progression:", ", ".join(data.get('progression', ['N/A'])))
-        create_row("Note Duration Base:", f"{data.get('seed_length_base', 'N/A')} beats")
-        octave = data.get('seed_octave_offset', 'N/A')
-        octave_text = f"+{octave:.1f}" if isinstance(octave, (int, float)) else "N/A"
-        create_row("Octave Shift:", octave_text)
-        create_row("Waveform:", self.wave_preset_button.get())
-        create_row("Output File:", "audio.wav")
-        
-    # -------------------- Generate Music -------------------- #
-    def _on_generate(self):
-        seed = self.seed_var.get()
-        volume = self.volume_var.get() / 100
-        tempo = self.tempo_var.get()
-        reverb = self.reverb_var.get()
-        delay = self.delay_var.get()
-        swell = self.swell_var.get()
-        wave_choice = self.wave_preset_button.get()
-        wave_type = wave_presets[wave_choice]
-
-        print("--- GENERATING NEW MUSIC ---")
-        print(f"  Seed: {seed}")
-        print(f"  Waveform: {wave_choice}")
-        print(f"  Volume: {volume:.0f}")
-        print(f"  Tempo: {tempo:.0f}")
-        print(f"  Reverb: {reverb}, Delay: {delay}, Swell: {swell}")
-        print("------------------------------")
-
-        self.status_label.configure(text="Generating ambient sounds... 🎵")
-        self.generate_button.configure(text="Generating...", state="disabled")
-
-        # Assume m.generate returns the dictionary of song info
-        # *** THIS LINE IS THE CRITICAL DEPENDENCY ***
         try:
-            self.last_song_data = m.generate(volume=volume, tempo=tempo, reverb=reverb, delay=delay, swell=swell,
-                                             seed=seed, wave_type=wave_type)
-        except Exception as e:
-            self.status_label.configure(text=f"ERROR in main.py: {e}")
-            self.last_song_data = None # Ensure it fails gracefully
-            self.generate_button.configure(text="Generate Music", state="normal")
-            return
+            w, h = self.vis_canvas.winfo_width(), self.vis_canvas.winfo_height()
+            if w > 1:
+                mid_y = h / 2
+                self.vis_canvas.delete("all")
+                amp = (self.volume_var.get() / 100) * (h / 3)
+                self.phase_offset += (self.tempo_var.get() / 120) * 0.1
+                x = np.linspace(0, w, num=w)
+                func = VISUALIZER_FUNCTIONS.get(self.wave_btn.get())
+                points = list(zip(x, mid_y + amp * func(x, -self.phase_offset)))
+                self.vis_canvas.create_line(points, fill=AppStyles.PRIMARY_COLOR, width=2.5)
+            self.after(33, self._animate_visualizer)
+        except: pass
 
-        self.after(1, self._on_generate_complete)
-
-    def _on_generate_complete(self):
-        self.status_label.configure(text="Ambient music ready! ✨")
-        self.generate_button.configure(text="Generate Music", state="normal")
-        
-        # Update the detailed information table
-        self._update_song_info_display(self.last_song_data)
-
-
-# -------------------- Main -------------------- #
 if __name__ == "__main__":
     app = AmbientMusicApp()
     app.mainloop()
